@@ -8,6 +8,7 @@ import (
 	"uuid"
 )
 
+type JobHeap []*Job
 type JobMap map[uuid.UUID]*Job
 
 // JobQueue is a min-heap of jobs ordered by UpdatedAt (oldest first). Use
@@ -15,7 +16,7 @@ type JobMap map[uuid.UUID]*Job
 // it; Push/Pop/Len/Less/Swap only exist to satisfy heap.Interface, and
 // enqueue/dequeue are internal helpers that assume the caller holds jq.mu.
 type JobQueue struct {
-	Pending   []*Job
+	Pending   JobHeap
 	DeadJobs  JobMap
 	Running   JobMap
 	MaxJobs   uint16
@@ -30,32 +31,32 @@ func NewJobQueue(maxJobs uint16, leaseTime time.Duration) *JobQueue {
 		Running:   make(JobMap),
 		DeadJobs:  make(JobMap),
 	}
-	heap.Init(jq)
+	heap.Init(&jq.Pending)
 	return jq
 }
 
-func (jq *JobQueue) Len() int { return len(jq.Pending) }
-func (jq *JobQueue) Less(i, j int) bool {
-	if jq.Pending[i].UpdatedAt.Compare(jq.Pending[j].UpdatedAt) == -1 {
+func (jh *JobHeap) Len() int { return len(*jh) }
+func (jh *JobHeap) Less(i, j int) bool {
+	if (*jh)[i].UpdatedAt.Compare((*jh)[j].UpdatedAt) == -1 {
 		return true
 	}
 	return false
 }
 
-func (jq *JobQueue) Swap(i, j int) {
-	jq.Pending[i], jq.Pending[j] = jq.Pending[j], jq.Pending[i]
+func (jh *JobHeap) Swap(i, j int) {
+	(*jh)[i], (*jh)[j] = (*jh)[j], (*jh)[i]
 }
 
-func (jq *JobQueue) Push(x any) {
-	jq.Pending = append(jq.Pending, x.(*Job))
+func (jh *JobHeap) Push(x any) {
+	*jh = append(*jh, x.(*Job))
 }
 
-func (jq *JobQueue) Pop() any {
-	old := jq.Pending
+func (jh *JobHeap) Pop() any {
+	old := *jh
 	n := len(old)
 	job := old[n-1]
 	old[n-1] = nil
-	jq.Pending = old[:n-1]
+	*jh = old[:n-1]
 	return job
 }
 
@@ -67,7 +68,7 @@ func (jq *JobQueue) enqueue(j *Job) bool {
 	}
 	j.JobStatus = StatusPending
 	j.UpdatedAt = time.Now()
-	heap.Push(jq, j)
+	heap.Push(&jq.Pending, j)
 	return true
 }
 
@@ -90,7 +91,7 @@ func (jq *JobQueue) Claim(workerId uuid.UUID) *Job {
 		return nil
 	}
 
-	j := heap.Pop(jq).(*Job)
+	j := heap.Pop(&jq.Pending).(*Job)
 	j.LeaseExpiration = time.Now().Add(jq.LeaseTime)
 	j.JobStatus = StatusRunning
 	j.UpdatedAt = time.Now()
@@ -103,6 +104,7 @@ var (
 	ErrJobNotRunning     = errors.New("Job not running")
 	ErrWorkerIdMissmatch = errors.New("Job is running for another worker")
 	ErrLeaseExpired      = errors.New("Lease has expired")
+	ErrEnqueueFailed     = errors.New("Failed to put task back in queue")
 )
 
 func jobCheck(j *Job, wid uuid.UUID) error {
@@ -146,15 +148,25 @@ func (jq *JobQueue) failLocked(id uuid.UUID, wid uuid.UUID, jobError error) erro
 	j.Attempts++
 	j.LastError = jobError.Error()
 	if j.Attempts > j.MaxAttempts {
-		j.JobStatus = StatusDead
-		j.UpdatedAt = time.Now()
-		jq.DeadJobs[j.ID] = j
+		markDead(jq, j, nil)
 		return nil
 	}
 
-	jq.enqueue(j) // we discard bool since j was already removed from Running above, freeing its capacity slot
+	if ok := jq.enqueue(j); !ok {
+		//This should not happen as the job gets taken from the Running list while locked and put back into the pending list while still locked.
+		markDead(jq, j, ErrEnqueueFailed)
+	}
 
 	return nil
+}
+
+func markDead(jq *JobQueue, j *Job, err error) {
+	j.JobStatus = StatusDead
+	j.UpdatedAt = time.Now()
+	jq.DeadJobs[j.ID] = j
+	if err != nil {
+		j.LastError = err.Error()
+	}
 }
 
 func (jq *JobQueue) Sweep() {

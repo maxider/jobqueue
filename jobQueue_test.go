@@ -10,7 +10,7 @@ import (
 	"uuid"
 )
 
-var _ sort.Interface = (*JobQueue)(nil)
+var _ sort.Interface = (*JobHeap)(nil)
 
 var errBoom = errors.New("boom")
 
@@ -22,12 +22,12 @@ func TestJobQueueLen(t *testing.T) {
 	now := time.Now()
 	jq := &JobQueue{Pending: []*Job{jobAt(now), jobAt(now), jobAt(now)}}
 
-	if got := jq.Len(); got != 3 {
+	if got := jq.Pending.Len(); got != 3 {
 		t.Errorf("Len() = %d, want 3", got)
 	}
 
 	jq = &JobQueue{}
-	if got := jq.Len(); got != 0 {
+	if got := jq.Pending.Len(); got != 0 {
 		t.Errorf("Len() = %d, want 0", got)
 	}
 }
@@ -38,13 +38,13 @@ func TestJobQueueLess(t *testing.T) {
 
 	jq := &JobQueue{Pending: []*Job{jobAt(earlier), jobAt(now)}}
 
-	if !jq.Less(0, 1) {
+	if !jq.Pending.Less(0, 1) {
 		t.Error("Less(0, 1) = false, want true when Jobs[0] is older than Jobs[1]")
 	}
-	if jq.Less(1, 0) {
+	if jq.Pending.Less(1, 0) {
 		t.Error("Less(1, 0) = true, want false when Jobs[1] is newer than Jobs[0]")
 	}
-	if jq.Less(0, 0) {
+	if jq.Pending.Less(0, 0) {
 		t.Error("Less(0, 0) = true, want false for equal timestamps")
 	}
 }
@@ -53,7 +53,7 @@ func TestJobQueueSwap(t *testing.T) {
 	a, b := jobAt(time.Now()), jobAt(time.Now().Add(time.Hour))
 	jq := &JobQueue{Pending: []*Job{a, b}}
 
-	jq.Swap(0, 1)
+	jq.Pending.Swap(0, 1)
 
 	if jq.Pending[0] != b || jq.Pending[1] != a {
 		t.Error("Swap(0, 1) did not swap the elements")
@@ -69,12 +69,12 @@ func TestJobQueueSort(t *testing.T) {
 		jobAt(now.Add(-time.Hour)),
 	}}
 
-	sort.Sort(jq)
+	sort.Sort(&jq.Pending)
 
-	if !sort.IsSorted(jq) {
+	if !sort.IsSorted(&jq.Pending) {
 		t.Fatal("queue is not sorted after sort.Sort")
 	}
-	for i := 1; i < jq.Len(); i++ {
+	for i := 1; i < jq.Pending.Len(); i++ {
 		if jq.Pending[i-1].UpdatedAt.After(jq.Pending[i].UpdatedAt) {
 			t.Errorf("Jobs[%d].UpdatedAt (%v) is after Jobs[%d].UpdatedAt (%v)",
 				i-1, jq.Pending[i-1].UpdatedAt, i, jq.Pending[i].UpdatedAt)
@@ -99,7 +99,7 @@ func TestJobQueueClaimOrder(t *testing.T) {
 	}
 
 	var got []uuid.UUID
-	for jq.Len() > 0 {
+	for jq.Pending.Len() > 0 {
 		j := jq.Claim(worker)
 		if j == nil {
 			t.Fatal("Claim() = nil while queue is non-empty")
@@ -137,8 +137,8 @@ func TestJobQueuePeek(t *testing.T) {
 	if !ok || peeked != oldest {
 		t.Errorf("Peek() = (%v, %v), want the oldest job", peeked, ok)
 	}
-	if jq.Len() != 3 {
-		t.Errorf("Peek() changed queue length to %d, want 3", jq.Len())
+	if jq.Pending.Len() != 3 {
+		t.Errorf("Peek() changed queue length to %d, want 3", jq.Pending.Len())
 	}
 }
 
@@ -154,8 +154,8 @@ func TestJobQueueEnqueueRespectsMaxJobs(t *testing.T) {
 	if jq.enqueue(jobAt(time.Now())) {
 		t.Error("enqueue() = true, want false once MaxJobs is reached")
 	}
-	if jq.Len() != 2 {
-		t.Errorf("Len() = %d, want 2 after rejected enqueue", jq.Len())
+	if jq.Pending.Len() != 2 {
+		t.Errorf("Len() = %d, want 2 after rejected enqueue", jq.Pending.Len())
 	}
 }
 
@@ -203,8 +203,8 @@ func TestJobQueueClaim(t *testing.T) {
 	if jq.Running[claimed.ID] != claimed {
 		t.Error("claimed job was not recorded in Running")
 	}
-	if jq.Len() != 1 {
-		t.Errorf("Len() = %d, want 1 after claiming one of two jobs", jq.Len())
+	if jq.Pending.Len() != 1 {
+		t.Errorf("Len() = %d, want 1 after claiming one of two jobs", jq.Pending.Len())
 	}
 }
 
@@ -284,8 +284,8 @@ func TestJobQueueFailRetriesUntilMaxAttempts(t *testing.T) {
 	if _, ok := jq.Running[claimed.ID]; ok {
 		t.Error("failed job is still present in Running")
 	}
-	if jq.Len() != 1 {
-		t.Fatalf("Len() = %d, want 1: job should have been re-enqueued into Pending", jq.Len())
+	if jq.Pending.Len() != 1 {
+		t.Fatalf("Len() = %d, want 1: job should have been re-enqueued into Pending", jq.Pending.Len())
 	}
 	if len(jq.DeadJobs) != 0 {
 		t.Errorf("DeadJobs = %d, want 0: job has not exceeded MaxAttempts yet", len(jq.DeadJobs))
@@ -309,8 +309,8 @@ func TestJobQueueFailRetriesUntilMaxAttempts(t *testing.T) {
 	if jq.DeadJobs[claimed.ID] != claimed {
 		t.Error("job exceeding MaxAttempts was not recorded in DeadJobs")
 	}
-	if jq.Len() != 0 {
-		t.Errorf("Len() = %d, want 0: dead job must not also be re-enqueued into Pending", jq.Len())
+	if jq.Pending.Len() != 0 {
+		t.Errorf("Len() = %d, want 0: dead job must not also be re-enqueued into Pending", jq.Pending.Len())
 	}
 	if _, ok := jq.Running[claimed.ID]; ok {
 		t.Error("dead job is still present in Running")
@@ -381,8 +381,8 @@ func TestJobQueueFailRetryAtCapacityIsNotLost(t *testing.T) {
 		t.Fatalf("Fail() error = %v, want nil", err)
 	}
 
-	if jq.Len() != 1 {
-		t.Fatalf("Len() = %d, want 1: retried job must not be dropped at capacity", jq.Len())
+	if jq.Pending.Len() != 1 {
+		t.Fatalf("Len() = %d, want 1: retried job must not be dropped at capacity", jq.Pending.Len())
 	}
 	if _, ok := jq.Running[claimed.ID]; ok {
 		t.Error("retried job is still present in Running")
@@ -450,8 +450,8 @@ func TestJobQueueSweepReclaimsExpiredLease(t *testing.T) {
 	if _, ok := jq.Running[claimed.ID]; ok {
 		t.Error("expired job is still present in Running after Sweep")
 	}
-	if jq.Len() != 1 {
-		t.Fatalf("Len() = %d, want 1: expired job should have been re-enqueued into Pending", jq.Len())
+	if jq.Pending.Len() != 1 {
+		t.Fatalf("Len() = %d, want 1: expired job should have been re-enqueued into Pending", jq.Pending.Len())
 	}
 	if claimed.Attempts != 1 {
 		t.Errorf("Attempts = %d, want 1", claimed.Attempts)
@@ -482,8 +482,8 @@ func TestJobQueueSweepMovesExhaustedJobToDeadJobs(t *testing.T) {
 	if _, ok := jq.Running[claimed.ID]; ok {
 		t.Error("dead job is still present in Running after Sweep")
 	}
-	if jq.Len() != 0 {
-		t.Errorf("Len() = %d, want 0: dead job must not also be re-enqueued into Pending", jq.Len())
+	if jq.Pending.Len() != 0 {
+		t.Errorf("Len() = %d, want 0: dead job must not also be re-enqueued into Pending", jq.Pending.Len())
 	}
 }
 
