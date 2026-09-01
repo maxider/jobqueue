@@ -93,7 +93,7 @@ func TestJobQueueClaimOrder(t *testing.T) {
 	var want []uuid.UUID
 	for i := 0; i < 4; i++ {
 		j := jobAt(time.Now())
-		jq.enqueue(j)
+		jq.enqueueLocked(j)
 		want = append(want, j.ID)
 		time.Sleep(time.Millisecond)
 	}
@@ -127,11 +127,11 @@ func TestJobQueuePeek(t *testing.T) {
 	}
 
 	oldest := jobAt(time.Now())
-	jq.enqueue(oldest)
+	jq.enqueueLocked(oldest)
 	time.Sleep(time.Millisecond)
-	jq.enqueue(jobAt(time.Now()))
+	jq.enqueueLocked(jobAt(time.Now()))
 	time.Sleep(time.Millisecond)
-	jq.enqueue(jobAt(time.Now()))
+	jq.enqueueLocked(jobAt(time.Now()))
 
 	peeked, ok := jq.Peek()
 	if !ok || peeked != oldest {
@@ -145,13 +145,13 @@ func TestJobQueuePeek(t *testing.T) {
 func TestJobQueueEnqueueRespectsMaxJobs(t *testing.T) {
 	jq := NewJobQueue(2, time.Minute)
 
-	if !jq.enqueue(jobAt(time.Now())) {
+	if !jq.enqueueLocked(jobAt(time.Now())) {
 		t.Fatal("enqueue() = false, want true for first job under capacity")
 	}
-	if !jq.enqueue(jobAt(time.Now())) {
+	if !jq.enqueueLocked(jobAt(time.Now())) {
 		t.Fatal("enqueue() = false, want true for second job at capacity limit")
 	}
-	if jq.enqueue(jobAt(time.Now())) {
+	if jq.enqueueLocked(jobAt(time.Now())) {
 		t.Error("enqueue() = true, want false once MaxJobs is reached")
 	}
 	if jq.Pending.Len() != 2 {
@@ -162,11 +162,11 @@ func TestJobQueueEnqueueRespectsMaxJobs(t *testing.T) {
 func TestJobQueueEnqueueMaxJobsCountsRunning(t *testing.T) {
 	jq := NewJobQueue(2, time.Minute)
 
-	jq.enqueue(jobAt(time.Now()))
-	jq.enqueue(jobAt(time.Now()))
+	jq.enqueueLocked(jobAt(time.Now()))
+	jq.enqueueLocked(jobAt(time.Now()))
 	jq.Claim(uuid.New()) // moves one job from Pending into Running; total in-flight is still 2
 
-	if jq.enqueue(jobAt(time.Now())) {
+	if jq.enqueueLocked(jobAt(time.Now())) {
 		t.Error("enqueue() = true, want false: MaxJobs should count Pending+Running, not Pending alone")
 	}
 }
@@ -182,9 +182,9 @@ func TestJobQueueClaim(t *testing.T) {
 	// enqueue always stamps UpdatedAt = time.Now() at call time, so the
 	// first job enqueued is necessarily the oldest.
 	oldest := jobAt(time.Now())
-	jq.enqueue(oldest)
+	jq.enqueueLocked(oldest)
 	time.Sleep(time.Millisecond)
-	jq.enqueue(jobAt(time.Now()))
+	jq.enqueueLocked(jobAt(time.Now()))
 
 	before := time.Now()
 	claimed := jq.Claim(worker)
@@ -210,8 +210,8 @@ func TestJobQueueClaim(t *testing.T) {
 
 func TestJobQueueClaimRecordsDifferentWorkerPerJob(t *testing.T) {
 	jq := NewJobQueue(0, time.Minute)
-	jq.enqueue(jobAt(time.Now()))
-	jq.enqueue(jobAt(time.Now().Add(time.Hour)))
+	jq.enqueueLocked(jobAt(time.Now()))
+	jq.enqueueLocked(jobAt(time.Now().Add(time.Hour)))
 
 	w1, w2 := uuid.New(), uuid.New()
 	j1 := jq.Claim(w1)
@@ -228,7 +228,7 @@ func TestJobQueueClaimRecordsDifferentWorkerPerJob(t *testing.T) {
 func TestJobQueueComplete(t *testing.T) {
 	jq := NewJobQueue(0, time.Minute)
 	worker := uuid.New()
-	jq.enqueue(jobAt(time.Now()))
+	jq.enqueueLocked(jobAt(time.Now()))
 	claimed := jq.Claim(worker)
 
 	if err := jq.Complete(claimed.ID, worker); err != nil {
@@ -253,7 +253,7 @@ func TestJobQueueCompleteUnknownID(t *testing.T) {
 func TestJobQueueCompleteWrongWorker(t *testing.T) {
 	jq := NewJobQueue(0, time.Minute)
 	owner, other := uuid.New(), uuid.New()
-	jq.enqueue(jobAt(time.Now()))
+	jq.enqueueLocked(jobAt(time.Now()))
 	claimed := jq.Claim(owner)
 	if err := jq.Complete(claimed.ID, other); err != ErrWorkerIdMissmatch {
 		t.Fatalf("Complete() error = %v, want %v", err, ErrWorkerIdMissmatch)
@@ -271,7 +271,7 @@ func TestJobQueueFailRetriesUntilMaxAttempts(t *testing.T) {
 	worker := uuid.New()
 	j := jobAt(time.Now())
 	j.MaxAttempts = 1
-	jq.enqueue(j)
+	jq.enqueueLocked(j)
 
 	// First failure: Attempts (1) is not > MaxAttempts (1), should go back to Pending.
 	claimed := jq.Claim(worker)
@@ -324,7 +324,7 @@ func TestJobQueueFailRetryRecordsLastError(t *testing.T) {
 	worker := uuid.New()
 	j := jobAt(time.Now())
 	j.MaxAttempts = 5
-	jq.enqueue(j)
+	jq.enqueueLocked(j)
 
 	claimed := jq.Claim(worker)
 	if err := jq.Fail(claimed.ID, worker, errBoom); err != nil {
@@ -351,7 +351,7 @@ func TestJobQueueFailWrongWorker(t *testing.T) {
 	owner, other := uuid.New(), uuid.New()
 	j := jobAt(time.Now())
 	j.MaxAttempts = 5
-	jq.enqueue(j)
+	jq.enqueueLocked(j)
 	claimed := jq.Claim(owner)
 
 	if err := jq.Fail(claimed.ID, other, errBoom); err != ErrWorkerIdMissmatch {
@@ -374,7 +374,7 @@ func TestJobQueueFailRetryAtCapacityIsNotLost(t *testing.T) {
 	worker := uuid.New()
 	j := jobAt(time.Now())
 	j.MaxAttempts = 5
-	jq.enqueue(j)
+	jq.enqueueLocked(j)
 
 	claimed := jq.Claim(worker)
 	if err := jq.Fail(claimed.ID, worker, errBoom); err != nil {
@@ -394,7 +394,7 @@ func TestJobQueueRetriedJobCanBeClaimedByDifferentWorker(t *testing.T) {
 	w1, w2 := uuid.New(), uuid.New()
 	j := jobAt(time.Now())
 	j.MaxAttempts = 5
-	jq.enqueue(j)
+	jq.enqueueLocked(j)
 
 	claimed := jq.Claim(w1)
 	if err := jq.Fail(claimed.ID, w1, errBoom); err != nil {
@@ -440,7 +440,7 @@ func TestJobQueueSweepReclaimsExpiredLease(t *testing.T) {
 	worker := uuid.New()
 	j := jobAt(time.Now())
 	j.MaxAttempts = 5
-	jq.enqueue(j)
+	jq.enqueueLocked(j)
 	claimed := jq.Claim(worker)
 
 	time.Sleep(5 * time.Millisecond) // let the lease expire
@@ -466,7 +466,7 @@ func TestJobQueueSweepMovesExhaustedJobToDeadJobs(t *testing.T) {
 	worker := uuid.New()
 	j := jobAt(time.Now())
 	j.MaxAttempts = 0 // any failure exceeds MaxAttempts
-	jq.enqueue(j)
+	jq.enqueueLocked(j)
 	claimed := jq.Claim(worker)
 
 	time.Sleep(5 * time.Millisecond) // let the lease expire
@@ -490,7 +490,7 @@ func TestJobQueueSweepMovesExhaustedJobToDeadJobs(t *testing.T) {
 func TestJobQueueSweepIgnoresUnexpiredLease(t *testing.T) {
 	jq := NewJobQueue(0, time.Hour)
 	worker := uuid.New()
-	jq.enqueue(jobAt(time.Now()))
+	jq.enqueueLocked(jobAt(time.Now()))
 	claimed := jq.Claim(worker)
 
 	runSweep(t, jq)
@@ -509,7 +509,7 @@ func TestJobQueueConcurrentClaimCompleteFail(t *testing.T) {
 	for i := 0; i < numJobs; i++ {
 		j := jobAt(time.Now())
 		j.MaxAttempts = 10
-		jq.enqueue(j)
+		jq.enqueueLocked(j)
 	}
 
 	var wg sync.WaitGroup

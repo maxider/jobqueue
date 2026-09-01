@@ -3,6 +3,7 @@ package main
 import (
 	"container/heap"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 	"uuid"
@@ -60,9 +61,15 @@ func (jh *JobHeap) Pop() any {
 	return job
 }
 
-// enqueue adds a job to the heap, returning false if the queue is already at MaxJobs capacity.
+func (jq *JobQueue) Enqueue(j *Job) bool {
+	jq.mu.Lock()
+	defer jq.mu.Unlock()
+	return jq.enqueueLocked(j)
+}
+
+// enqueueLocked adds a job to the heap, returning false if the queue is already at MaxJobs capacity.
 // Caller must hold jq.mu.
-func (jq *JobQueue) enqueue(j *Job) bool {
+func (jq *JobQueue) enqueueLocked(j *Job) bool {
 	if jq.MaxJobs > 0 && uint16(len(jq.Pending)+len(jq.Running)) >= jq.MaxJobs {
 		return false
 	}
@@ -152,7 +159,7 @@ func (jq *JobQueue) failLocked(id uuid.UUID, wid uuid.UUID, jobError error) erro
 		return nil
 	}
 
-	if ok := jq.enqueue(j); !ok {
+	if ok := jq.enqueueLocked(j); !ok {
 		//This should not happen as the job gets taken from the Running list while locked and put back into the pending list while still locked.
 		markDead(jq, j, ErrEnqueueFailed)
 	}
@@ -170,10 +177,12 @@ func markDead(jq *JobQueue, j *Job, err error) {
 }
 
 func (jq *JobQueue) Sweep() {
+	//TODO: Add debug level logging
 	jq.mu.Lock()
 	defer jq.mu.Unlock()
 	for _, j := range jq.Running {
 		if time.Now().After(j.LeaseExpiration) {
+			fmt.Printf("sweeper: sweeped %s\n", j.ID)
 			jq.failLocked(j.ID, j.LastWorkerId, ErrLeaseExpired)
 		}
 	}

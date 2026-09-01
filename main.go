@@ -1,72 +1,134 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
+	"os/signal"
+	"strconv"
 	"sync"
+	"syscall"
 	"time"
 	"uuid"
 )
 
-const (
-	numWorkers = 4
-	numJobs    = 10
+var (
+	leaseTime = time.Second
 )
 
 func main() {
-	jobs := make(chan Job, numJobs)
-	results := make(chan Job, numJobs)
+	jq := NewJobQueue(0, leaseTime)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	var wg sync.WaitGroup
-	for id := 1; id <= numWorkers; id++ {
+	wg.Go(func() {
+		runSweeper(ctx, jq, 500*time.Millisecond)
+	})
+
+	wg.Go(func() {
+		runProducer(ctx, jq, 50*time.Millisecond)
+	})
+
+	const NumWorkers = 4
+	for range NumWorkers {
 		wg.Go(func() {
-			worker(id, jobs, results)
+			workerId := uuid.New()
+			runWorker(ctx, jq, workerId)
 		})
 	}
 
-	for i := 0; i < numJobs; i++ {
-		jobs <- newJob(fmt.Sprintf(`{"n": %d}`, i))
-	}
-	close(jobs)
+	fmt.Println("running — press Ctrl+C to stop")
+	<-ctx.Done()
+	fmt.Println("shutdown signal received, waiting for in-flight work to finish...")
 
-	// Close results only after every worker has stopped writing to it,
-	// otherwise the range below would block forever waiting for more values.
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
+	wg.Wait()
+	fmt.Println("clean shutdown complete")
 
-	for r := range results {
-		fmt.Printf("job %s finished with status %s (attempt %d)\n", r.ID, r.JobStatus, r.Attempts)
+}
+
+func runWorker(ctx context.Context, jq *JobQueue, workerId uuid.UUID) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default: //leave select
+		}
+
+		j := jq.Claim(workerId)
+		if j == nil {
+			//no job ready so wait and try again
+			time.Sleep(400 * time.Millisecond)
+			continue
+		}
+
+		fmt.Printf("worker %s: processing job %s (attempt %d)\n", workerId, j.ID, j.Attempts)
+		time.Sleep(200*time.Millisecond + time.Duration(50-rand.Intn(100))*time.Millisecond)
+
+		if stallChance := rand.Float32(); stallChance > .9 {
+			time.Sleep(leaseTime)
+		}
+
+		if errChance := rand.Float32(); errChance > .8 {
+			if err := jq.Fail(j.ID, workerId, fmt.Errorf("worker %s failed", workerId)); err != nil {
+				fmt.Printf("worker %s: fail rejected: %v\n", workerId, err)
+			}
+			continue
+		}
+
+		if err := jq.Complete(j.ID, workerId); err != nil {
+			fmt.Printf("worker %s: complete rejected: %v\n", workerId, err)
+		}
 	}
 }
 
-// worker pulls jobs off the shared channel until it's closed and drained,
-// so any number of workers can run concurrently without double-processing a job.
-func worker(id int, jobs <-chan Job, results chan<- Job) {
-	for j := range jobs {
-		j.Attempts++
-		j.JobStatus = StatusRunning
-		fmt.Printf("worker %d: starting job %s\n", id, j.ID)
+func runSweeper(ctx context.Context, jq *JobQueue, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
-		time.Sleep(100 * time.Millisecond) // simulate work
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			jq.Sweep()
+		}
 
-		j.JobStatus = StatusComplete
-		j.UpdatedAt = time.Now()
-		fmt.Printf("worker %d: finished job %s\n", id, j.ID)
-
-		results <- j
 	}
 }
 
-func newJob(payload string) Job {
-	now := time.Now()
-	return Job{
-		ID:          uuid.New(),
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		MaxAttempts: 3,
-		JobStatus:   StatusPending,
-		Payload:     json.RawMessage(payload),
+func newJob(payload string) *Job {
+	return &Job{
+		ID:              uuid.New(),
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+		Attempts:        0,
+		MaxAttempts:     3,
+		JobStatus:       StatusPending,
+		LeaseExpiration: time.Time{},
+		Payload:         json.RawMessage(fmt.Sprintf(`{"n": %s}`, payload)),
+		LastError:       "",
+		LastWorkerId:    uuid.UUID{},
+	}
+}
+
+func runProducer(ctx context.Context, jq *JobQueue, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	n := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			{
+				j := newJob(strconv.Itoa(n))
+				jq.Enqueue(j)
+				fmt.Printf("producer: Enqued Job %d ID: %s\n", n, j.ID)
+				n++
+			}
+		}
 	}
 }
