@@ -3,10 +3,16 @@
 A concurrent, in-memory job queue in Go with lease-based claiming, automatic
 retries, dead-lettering, and Prometheus/Grafana observability.
 
+## Layout
+
+- `queue/` — the library: `JobQueue`, lease-based claiming, retries, dead-lettering. No Prometheus/HTTP dependency.
+- `cmd/job-queue/` — a demo harness: a producer, workers, a sweeper, and Prometheus instrumentation, wired together in `main.go`.
+- `deploy/` — `Dockerfile`, `docker-compose.yml`, and Prometheus/Grafana config for running the full observability stack.
+
 ## Running it
 
 ```sh
-go run .
+go run ./cmd/job-queue
 ```
 
 This starts a demo harness: a producer enqueuing synthetic jobs, four
@@ -19,7 +25,7 @@ For the full observability stack (app + Prometheus + a pre-provisioned
 Grafana dashboard):
 
 ```sh
-docker compose up --build
+cd deploy && docker compose up --build
 ```
 
 Then open `http://localhost:3000` for Grafana (anonymous viewer access is
@@ -58,7 +64,7 @@ one is merely slow rather than actually dead (its lease expires, a second
 worker claims and starts processing, and *then* the first worker finishes
 and calls `Complete`). Job handlers built on top of this queue must be
 idempotent — e.g. keying external side effects (like a payment charge) by
-job ID. See `chargecard_example_test.go` for a worked example.
+job ID. See `queue/chargecard_example_test.go` for a worked example.
 
 ## Metrics
 
@@ -74,10 +80,10 @@ Exposed via `/metrics` in Prometheus format:
 | `queue_running_jobs` | gauge | Jobs currently claimed and in flight |
 | `job_processing_duration_seconds` | histogram | Time from claim to completion/failure |
 
-Metrics are recorded in `main.go` (the demo harness), not inside
-`jobQueue.go` — the queue itself has no Prometheus dependency, which keeps
-it usable as a plain library regardless of how a caller wants to observe
-it.
+Metrics are recorded in `cmd/job-queue` (the demo harness), not inside the
+`queue` package itself — the library has no Prometheus dependency, which
+keeps it usable as a plain package regardless of how a caller wants to
+observe it.
 
 ## Testing
 
@@ -85,8 +91,8 @@ it.
 go test ./... -race
 ```
 
-`main.go` (the demo harness) is intentionally uncovered; `jobQueue.go` and
-`job.go` are the tested surface.
+`cmd/job-queue` (the demo harness) is intentionally uncovered; the `queue`
+package is the tested surface.
 
 ## Known limitations
 

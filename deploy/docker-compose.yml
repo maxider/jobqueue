@@ -1,6 +1,10 @@
+name: job-queue
+
 services:
   app:
-    build: .
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     ports:
       - "2112:2112"
 

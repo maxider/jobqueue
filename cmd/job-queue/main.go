@@ -17,6 +17,8 @@ import (
 	"uuid"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/maxider/job-queue/queue"
 )
 
 var (
@@ -27,7 +29,7 @@ var (
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
-	jq := NewJobQueue(0, leaseTime)
+	jq := queue.NewJobQueue(0, leaseTime)
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -84,7 +86,7 @@ func runMetricsServer(ctx context.Context, addr string) {
 	}
 }
 
-func runWorker(ctx context.Context, jq *JobQueue, workerId uuid.UUID) {
+func runWorker(ctx context.Context, jq *queue.JobQueue, workerId uuid.UUID) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -112,7 +114,7 @@ func runWorker(ctx context.Context, jq *JobQueue, workerId uuid.UUID) {
 			jobsFailedTotal.Inc()
 			if err := jq.Fail(j.ID, workerId, fmt.Errorf("worker %s failed", workerId)); err != nil {
 				slog.Warn("fail rejected", "worker_id", workerId, "job_id", j.ID, "error", err)
-			} else if j.JobStatus == StatusDead {
+			} else if j.JobStatus == queue.StatusDead {
 				jobsDeadLetteredTotal.Inc()
 			}
 			continue
@@ -126,7 +128,7 @@ func runWorker(ctx context.Context, jq *JobQueue, workerId uuid.UUID) {
 	}
 }
 
-func runSweeper(ctx context.Context, jq *JobQueue, interval time.Duration) {
+func runSweeper(ctx context.Context, jq *queue.JobQueue, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -141,14 +143,14 @@ func runSweeper(ctx context.Context, jq *JobQueue, interval time.Duration) {
 	}
 }
 
-func newJob(payload string) *Job {
-	return &Job{
+func newJob(payload string) *queue.Job {
+	return &queue.Job{
 		ID:              uuid.New(),
 		CreatedAt:       time.Now(),
 		UpdatedAt:       time.Now(),
 		Attempts:        0,
 		MaxAttempts:     3,
-		JobStatus:       StatusPending,
+		JobStatus:       queue.StatusPending,
 		LeaseExpiration: time.Time{},
 		Payload:         json.RawMessage(fmt.Sprintf(`{"n": %s}`, payload)),
 		LastError:       "",
@@ -156,7 +158,7 @@ func newJob(payload string) *Job {
 	}
 }
 
-func runProducer(ctx context.Context, jq *JobQueue, interval time.Duration) {
+func runProducer(ctx context.Context, jq *queue.JobQueue, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 

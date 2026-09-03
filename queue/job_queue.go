@@ -1,4 +1,6 @@
-package main
+// Package queue implements a concurrent, in-memory job queue with
+// lease-based claiming, automatic retries, and dead-lettering.
+package queue
 
 import (
 	"container/heap"

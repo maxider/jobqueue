@@ -6,11 +6,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/maxider/job-queue/queue"
 )
 
-// Metrics instrumentation lives here rather than in jobQueue.go on purpose:
-// JobQueue is the library, main.go is the demo harness, and the harness is
-// what should own the Prometheus dependency.
+// Metrics instrumentation lives here rather than in the queue package on
+// purpose: queue is the library, this cmd is the demo harness, and the
+// harness is what should own the Prometheus dependency.
 var (
 	jobsEnqueuedTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "jobs_enqueued_total",
@@ -45,9 +47,9 @@ var (
 	})
 )
 
-// runMetricsSampler periodically samples queue depth gauges via Peek/len,
+// runMetricsSampler periodically samples queue depth gauges via Counts,
 // since JobQueue deliberately doesn't expose a Prometheus-flavored API.
-func runMetricsSampler(ctx context.Context, jq *JobQueue, interval time.Duration) {
+func runMetricsSampler(ctx context.Context, jq *queue.JobQueue, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 

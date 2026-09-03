@@ -4,6 +4,7 @@
 - [x] Remove `job-queue.exe` from git and add a real `.gitignore`
 - [x] Commit the scenario/example test files
 - [x] Add a `.gitattributes` to normalize line endings
+- [x] Split into `queue/` (library), `cmd/job-queue/` (demo binary), and `deploy/` (Docker/Prometheus/Grafana config) instead of one flat `package main`
 
 ## Documentation
 - [x] Write a `README.md`: what this is, how to run it, and a design write-up (min-heap vs. sorted slice, single mutex, lease-based reclamation + dead-lettering, at-least-once delivery and consumer idempotency)
@@ -12,11 +13,11 @@
 - [x] Lowercase error strings (`staticcheck` ST1005)
 - [x] Simplify `JobHeap.Less` to use `.Before(...)`
 - [x] Replace `fmt.Printf`/`fmt.Println` logging with `log/slog`
-- [x] Resolve the `//TODO: Add debug level logging` comment in `jobQueue.go`
+- [x] Resolve the `//TODO: Add debug level logging` comment in `queue/job_queue.go`
 - [ ] Consider unexporting `JobQueue.Pending` / `.Running` / `.DeadJobs` (or documenting more forcefully) — they're only safe to touch under `jq.mu`, but nothing stops external callers from mutating them directly today
 
 ## Observability
-- [x] Prometheus metrics (`metrics.go`): enqueue/complete/fail/dead-letter counters, pending/running gauges, processing-duration histogram, exposed via `/metrics`
+- [x] Prometheus metrics (`cmd/job-queue/metrics.go`): enqueue/complete/fail/dead-letter counters, pending/running gauges, processing-duration histogram, exposed via `/metrics`
 - [x] Docker Compose stack (app + Prometheus + Grafana) with a provisioned dashboard
 
 ## Engineering maturity signals
