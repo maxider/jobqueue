@@ -1,12 +1,33 @@
 name: job-queue
 
 services:
-  app:
+  server:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+    entrypoint: ["/server"]
+    command: ["-grpc-addr=:50051", "-metrics-addr=:2112"]
     ports:
       - "2112:2112"
+      - "50051:50051"
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    entrypoint: ["/worker"]
+    command: ["-server-addr=server:50051"]
+    depends_on:
+      - server
+
+  producer:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    entrypoint: ["/producer"]
+    command: ["-server-addr=server:50051"]
+    depends_on:
+      - server
 
   prometheus:
     image: prom/prometheus:latest
@@ -15,7 +36,7 @@ services:
     ports:
       - "9090:9090"
     depends_on:
-      - app
+      - server
 
   grafana:
     image: grafana/grafana:latest

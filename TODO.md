@@ -24,6 +24,15 @@
 - [x] Add a GitHub Actions workflow: `go build ./...`, `go vet ./...`, `go test ./... -race`, `golangci-lint`
 - [x] Add a `golangci-lint` config and fix what it flags
 
+## Network layer
+- [x] Define a `JobQueueService` gRPC contract (`api/jobqueue/v1/jobqueue.proto`) and check in generated code (`gen/jobqueue/v1/`)
+- [x] Add `rpc/` adapting `queue.JobQueue` to `JobQueueService`, owning event-driven Prometheus metrics (enqueue/complete/fail/dead-letter counters + processing-duration histogram)
+- [x] Split the single demo binary into `cmd/server` (queue + sweeper + gRPC API + `/metrics`), `cmd/worker`, and `cmd/producer` (network gRPC clients)
+- [x] Update `deploy/` (Dockerfile, docker-compose, prometheus.yml) for the three-service split
+- [ ] Long-poll or server-streaming `Claim` instead of unary polling, to cut idle-worker RPC chatter
+- [ ] TLS + auth on the gRPC connection instead of insecure credentials
+- [ ] A `Makefile`/`buf` setup for regenerating `gen/jobqueue/v1/` instead of the hand-run `protoc` invocation in the README
+
 ## Stretch (only if turning this into more than a portfolio demo)
 - [ ] Thread `context.Context` through `Claim`/`Complete`/`Fail` for cancellation/timeouts
 - [ ] Pluggable persistence (currently fully in-memory — noted as a known limitation in the README)

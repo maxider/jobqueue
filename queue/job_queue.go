@@ -97,6 +97,16 @@ func (jq *JobQueue) Counts() (pending int, running int) {
 	return len(jq.Pending), len(jq.Running)
 }
 
+// IsDead reports whether id was moved to the dead-letter set, e.g. to tell
+// a caller of Fail whether that call was the one that exhausted retries.
+func (jq *JobQueue) IsDead(id uuid.UUID) bool {
+	jq.mu.Lock()
+	defer jq.mu.Unlock()
+
+	_, dead := jq.DeadJobs[id]
+	return dead
+}
+
 func (jq *JobQueue) Claim(workerId uuid.UUID) *Job {
 	jq.mu.Lock()
 	defer jq.mu.Unlock()

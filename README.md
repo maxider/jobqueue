@@ -1,28 +1,35 @@
 # job-queue
 
-A concurrent, in-memory job queue in Go with lease-based claiming, automatic
-retries, dead-lettering, and Prometheus/Grafana observability.
+A concurrent, lease-based job queue in Go, split into a gRPC server and
+network clients, with Prometheus/Grafana observability.
 
 ## Layout
 
-- `queue/` — the library: `JobQueue`, lease-based claiming, retries, dead-lettering. No Prometheus/HTTP dependency.
-- `cmd/job-queue/` — a demo harness: a producer, workers, a sweeper, and Prometheus instrumentation, wired together in `main.go`.
-- `deploy/` — `Dockerfile`, `docker-compose.yml`, and Prometheus/Grafana config for running the full observability stack.
+- `queue/` — the library: `JobQueue`, lease-based claiming, retries, dead-lettering. No Prometheus/gRPC dependency.
+- `api/jobqueue/v1/` — the protobuf contract (`jobqueue.proto`) for `JobQueueService`.
+- `gen/jobqueue/v1/` — generated protobuf/gRPC Go code (checked in; regenerate with `make proto` — see below).
+- `rpc/` — the gRPC service: adapts `queue.JobQueue` to `JobQueueService`, and owns the Prometheus counters/histogram for events it observes (enqueue/complete/fail/dead-letter).
+- `cmd/server/` — runs `JobQueue` + the sweeper + the gRPC API + a `/metrics` endpoint.
+- `cmd/worker/` — a demo consumer: dials the server over gRPC, claims/processes/completes (or randomly fails) jobs.
+- `cmd/producer/` — a demo producer: dials the server over gRPC and periodically enqueues synthetic jobs.
+- `deploy/` — `Dockerfile` (builds all three binaries into one image), `docker-compose.yml`, and Prometheus/Grafana config.
 
 ## Running it
 
 ```sh
-go run ./cmd/job-queue
+go run ./cmd/server                                    # gRPC on :50051, metrics on :2112
+go run ./cmd/producer -server-addr localhost:50051
+go run ./cmd/worker   -server-addr localhost:50051
 ```
 
-This starts a demo harness: a producer enqueuing synthetic jobs, four
-workers claiming/processing/completing (or randomly failing) them, and a
-sweeper reclaiming jobs whose lease expired without being completed or
-failed (e.g. a crashed worker). Metrics are exposed at
-`http://localhost:2112/metrics`.
+The server owns the `JobQueue`, the sweeper, and the gRPC API. The
+producer periodically enqueues synthetic jobs; the worker claims,
+"processes" (simulated work with a random failure/stall chance), and
+reports back `Complete` or `Fail` — all over the network, not in-process.
+Metrics are exposed at `http://localhost:2112/metrics`.
 
-For the full observability stack (app + Prometheus + a pre-provisioned
-Grafana dashboard):
+For the full stack (server + worker + producer + Prometheus + a
+pre-provisioned Grafana dashboard):
 
 ```sh
 cd deploy && docker compose up --build
@@ -31,7 +38,22 @@ cd deploy && docker compose up --build
 Then open `http://localhost:3000` for Grafana (anonymous viewer access is
 enabled) — the "Job Queue" dashboard shows queue depth, throughput,
 failure rate, and processing duration out of the box. Raw Prometheus is at
-`http://localhost:9090`.
+`http://localhost:9090`. The server's gRPC API is also published on the
+host at `localhost:50051` if you want to point another client at it.
+
+## Regenerating the protobuf/gRPC code
+
+Requires `protoc`, `protoc-gen-go`, and `protoc-gen-go-grpc` on `PATH`:
+
+```sh
+protoc -I api -I "$(go env GOPATH)"/../protoc/include \
+  --go_out=. --go_opt=module=github.com/maxider/job-queue \
+  --go-grpc_out=. --go-grpc_opt=module=github.com/maxider/job-queue \
+  api/jobqueue/v1/jobqueue.proto
+```
+
+(Adjust the second `-I` to wherever your `protoc` install keeps
+`google/protobuf/*.proto`.)
 
 ## Design
 
@@ -53,22 +75,35 @@ throughput bottleneck at the scale this is built for.
 **Lease-based reclamation + dead-lettering.** A worker that claims a job
 gets a time-limited lease, not permanent ownership. If it doesn't call
 `Complete` or `Fail` before the lease expires — because it crashed, hung,
-or lost its connection — a periodic `Sweep` treats the expired lease as a
-failure and puts the job back in `Pending` for another worker to pick up.
-Jobs that exceed `MaxAttempts` (via explicit `Fail` or repeated
-lease expiry) move to `DeadJobs` instead of retrying forever.
+or lost its network connection — a periodic `Sweep` treats the expired
+lease as a failure and puts the job back in `Pending` for another worker
+to pick up. Jobs that exceed `MaxAttempts` (via explicit `Fail` or
+repeated lease expiry) move to `DeadJobs` instead of retrying forever.
 
 **At-least-once delivery.** Because of lease-based reclamation, the same
 job can be claimed and processed by two different workers if the first
 one is merely slow rather than actually dead (its lease expires, a second
 worker claims and starts processing, and *then* the first worker finishes
-and calls `Complete`). Job handlers built on top of this queue must be
-idempotent — e.g. keying external side effects (like a payment charge) by
-job ID. See `queue/chargecard_example_test.go` for a worked example.
+and calls `Complete`). Over the network this also covers the case where a
+worker's `Complete`/`Fail` RPC is lost or delayed. Job handlers built on
+top of this queue must be idempotent — e.g. keying external side effects
+(like a payment charge) by job ID. See `queue/chargecard_example_test.go`
+for a worked example, and watch for `"complete rejected"` /
+`"fail rejected"` warnings in the worker's logs — those are this race
+being caught, not a bug.
+
+**A network boundary between queue and callers.** `queue.JobQueue` used
+to be called in-process by producer/worker goroutines sharing one
+address space. `rpc.Server` now adapts it to `JobQueueService`
+(gRPC/protobuf), so `cmd/server` can run as one process while any number
+of `cmd/worker`/`cmd/producer` instances — potentially on different
+machines — reach it over the network. `queue/` itself stays free of any
+gRPC or Prometheus dependency; only `rpc/` and the `cmd/` binaries know
+about the network and observability layers.
 
 ## Metrics
 
-Exposed via `/metrics` in Prometheus format:
+Exposed via `/metrics` on the server, in Prometheus format:
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -80,10 +115,12 @@ Exposed via `/metrics` in Prometheus format:
 | `queue_running_jobs` | gauge | Jobs currently claimed and in flight |
 | `job_processing_duration_seconds` | histogram | Time from claim to completion/failure |
 
-Metrics are recorded in `cmd/job-queue` (the demo harness), not inside the
-`queue` package itself — the library has no Prometheus dependency, which
-keeps it usable as a plain package regardless of how a caller wants to
-observe it.
+Metrics are recorded in `rpc/` (counters + the processing-duration
+histogram, since `Server` observes every `Claim`/`Complete`/`Fail` RPC)
+and `cmd/server/metrics.go` (the pending/running gauges, sampled directly
+off the `JobQueue`) — not inside the `queue` package itself, which keeps
+the library free of a Prometheus dependency regardless of how a caller
+wants to observe it.
 
 ## Testing
 
@@ -91,12 +128,24 @@ observe it.
 go test ./... -race
 ```
 
-`cmd/job-queue` (the demo harness) is intentionally uncovered; the `queue`
-package is the tested surface.
+`cmd/server`, `cmd/worker`, `cmd/producer`, and `rpc` are intentionally
+uncovered by unit tests; the `queue` package is the tested surface. The
+network wiring itself is exercised manually (`docker compose up`, or
+running `cmd/server`/`cmd/worker`/`cmd/producer` locally).
 
 ## Known limitations
 
-- Fully in-memory — state doesn't survive a restart. Pluggable persistence
-  is a natural next step but isn't implemented here.
-- `Claim`/`Complete`/`Fail` don't take a `context.Context`, so there's no
-  built-in way to time out or cancel an individual call.
+- `queue.JobQueue` is fully in-memory — state doesn't survive a server
+  restart. Pluggable persistence is a natural next step but isn't
+  implemented here.
+- `Claim`/`Complete`/`Fail` don't take a `context.Context` at the
+  `queue` package level, so there's no built-in way to time out or
+  cancel an individual call to the library itself (the gRPC layer above
+  it does thread a context, but cancellation doesn't propagate past
+  `rpc.Server` into `queue.JobQueue`).
+- `Claim` is unary/polling (workers sleep and retry when nothing's
+  pending) rather than a server-streaming or long-poll RPC — simpler, but
+  it means idle workers generate a steady trickle of empty `Claim` calls.
+- No transport security — the gRPC server and clients use insecure
+  (unencrypted, unauthenticated) connections. Fine for a local demo, not
+  for anything beyond it.
