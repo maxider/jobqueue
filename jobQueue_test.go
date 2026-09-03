@@ -6,7 +6,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
 	"uuid"
 )
 
@@ -523,9 +522,9 @@ func TestJobQueueConcurrentClaimCompleteFail(t *testing.T) {
 				return
 			}
 			if j.Attempts%2 == 0 {
-				jq.Complete(j.ID, worker)
+				_ = jq.Complete(j.ID, worker)
 			} else {
-				jq.Fail(j.ID, worker, errBoom)
+				_ = jq.Fail(j.ID, worker, errBoom)
 			}
 		}()
 	}

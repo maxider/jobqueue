@@ -3,26 +3,43 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
+	"net/http"
+	"os"
 	"os/signal"
 	"strconv"
 	"sync"
 	"syscall"
 	"time"
 	"uuid"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
-	leaseTime = time.Second
+	leaseTime   = time.Second
+	metricsAddr = ":2112"
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	jq := NewJobQueue(0, leaseTime)
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	var wg sync.WaitGroup
+	wg.Go(func() {
+		runMetricsServer(ctx, metricsAddr)
+	})
+
+	wg.Go(func() {
+		runMetricsSampler(ctx, jq, 500*time.Millisecond)
+	})
+
 	wg.Go(func() {
 		runSweeper(ctx, jq, 500*time.Millisecond)
 	})
@@ -39,13 +56,32 @@ func main() {
 		})
 	}
 
-	fmt.Println("running — press Ctrl+C to stop")
+	slog.Info("running", "metrics_addr", metricsAddr, "msg", "press Ctrl+C to stop")
 	<-ctx.Done()
-	fmt.Println("shutdown signal received, waiting for in-flight work to finish...")
+	slog.Info("shutdown signal received, waiting for in-flight work to finish...")
 
 	wg.Wait()
-	fmt.Println("clean shutdown complete")
+	slog.Info("clean shutdown complete")
 
+}
+
+func runMetricsServer(ctx context.Context, addr string) {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	srv := &http.Server{Addr: addr, Handler: mux}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("metrics server shutdown", "error", err)
+		}
+	}()
+
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("metrics server failed", "error", err)
+	}
 }
 
 func runWorker(ctx context.Context, jq *JobQueue, workerId uuid.UUID) {
@@ -63,22 +99,29 @@ func runWorker(ctx context.Context, jq *JobQueue, workerId uuid.UUID) {
 			continue
 		}
 
-		fmt.Printf("worker %s: processing job %s (attempt %d)\n", workerId, j.ID, j.Attempts)
+		slog.Debug("processing job", "worker_id", workerId, "job_id", j.ID, "attempt", j.Attempts)
+		start := time.Now()
 		time.Sleep(200*time.Millisecond + time.Duration(50-rand.Intn(100))*time.Millisecond)
 
 		if stallChance := rand.Float32(); stallChance > .9 {
 			time.Sleep(leaseTime)
 		}
+		jobProcessingDuration.Observe(time.Since(start).Seconds())
 
 		if errChance := rand.Float32(); errChance > .8 {
+			jobsFailedTotal.Inc()
 			if err := jq.Fail(j.ID, workerId, fmt.Errorf("worker %s failed", workerId)); err != nil {
-				fmt.Printf("worker %s: fail rejected: %v\n", workerId, err)
+				slog.Warn("fail rejected", "worker_id", workerId, "job_id", j.ID, "error", err)
+			} else if j.JobStatus == StatusDead {
+				jobsDeadLetteredTotal.Inc()
 			}
 			continue
 		}
 
 		if err := jq.Complete(j.ID, workerId); err != nil {
-			fmt.Printf("worker %s: complete rejected: %v\n", workerId, err)
+			slog.Warn("complete rejected", "worker_id", workerId, "job_id", j.ID, "error", err)
+		} else {
+			jobsCompletedTotal.Inc()
 		}
 	}
 }
@@ -125,8 +168,10 @@ func runProducer(ctx context.Context, jq *JobQueue, interval time.Duration) {
 		case <-ticker.C:
 			{
 				j := newJob(strconv.Itoa(n))
-				jq.Enqueue(j)
-				fmt.Printf("producer: Enqued Job %d ID: %s\n", n, j.ID)
+				if jq.Enqueue(j) {
+					jobsEnqueuedTotal.Inc()
+				}
+				slog.Debug("enqueued job", "n", n, "job_id", j.ID)
 				n++
 			}
 		}

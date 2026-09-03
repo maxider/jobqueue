@@ -3,7 +3,7 @@ package main
 import (
 	"container/heap"
 	"errors"
-	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 	"uuid"
@@ -38,10 +38,7 @@ func NewJobQueue(maxJobs uint16, leaseTime time.Duration) *JobQueue {
 
 func (jh *JobHeap) Len() int { return len(*jh) }
 func (jh *JobHeap) Less(i, j int) bool {
-	if (*jh)[i].UpdatedAt.Compare((*jh)[j].UpdatedAt) == -1 {
-		return true
-	}
-	return false
+	return (*jh)[i].UpdatedAt.Before((*jh)[j].UpdatedAt)
 }
 
 func (jh *JobHeap) Swap(i, j int) {
@@ -90,6 +87,14 @@ func (jq *JobQueue) Peek() (*Job, bool) {
 	return jq.Pending[0], true
 }
 
+// Counts returns the current number of pending and running jobs.
+func (jq *JobQueue) Counts() (pending int, running int) {
+	jq.mu.Lock()
+	defer jq.mu.Unlock()
+
+	return len(jq.Pending), len(jq.Running)
+}
+
 func (jq *JobQueue) Claim(workerId uuid.UUID) *Job {
 	jq.mu.Lock()
 	defer jq.mu.Unlock()
@@ -108,10 +113,10 @@ func (jq *JobQueue) Claim(workerId uuid.UUID) *Job {
 }
 
 var (
-	ErrJobNotRunning     = errors.New("Job not running")
-	ErrWorkerIdMissmatch = errors.New("Job is running for another worker")
-	ErrLeaseExpired      = errors.New("Lease has expired")
-	ErrEnqueueFailed     = errors.New("Failed to put task back in queue")
+	ErrJobNotRunning     = errors.New("job not running")
+	ErrWorkerIdMissmatch = errors.New("job is running for another worker")
+	ErrLeaseExpired      = errors.New("lease has expired")
+	ErrEnqueueFailed     = errors.New("failed to put task back in queue")
 )
 
 func jobCheck(j *Job, wid uuid.UUID) error {
@@ -177,13 +182,14 @@ func markDead(jq *JobQueue, j *Job, err error) {
 }
 
 func (jq *JobQueue) Sweep() {
-	//TODO: Add debug level logging
 	jq.mu.Lock()
 	defer jq.mu.Unlock()
 	for _, j := range jq.Running {
 		if time.Now().After(j.LeaseExpiration) {
-			fmt.Printf("sweeper: sweeped %s\n", j.ID)
-			jq.failLocked(j.ID, j.LastWorkerId, ErrLeaseExpired)
+			slog.Debug("sweeper reclaimed expired lease", "job_id", j.ID, "worker_id", j.LastWorkerId)
+			// j came straight out of jq.Running keyed by its own LastWorkerId,
+			// so jobCheck inside failLocked can never reject it.
+			_ = jq.failLocked(j.ID, j.LastWorkerId, ErrLeaseExpired)
 		}
 	}
 }
