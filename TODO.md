@@ -29,6 +29,7 @@
 - [x] Add `rpc/` adapting `queue.JobQueue` to `JobQueueService`, owning event-driven Prometheus metrics (enqueue/complete/fail/dead-letter counters + processing-duration histogram)
 - [x] Split the single demo binary into `cmd/server` (queue + sweeper + gRPC API + `/metrics`), `cmd/worker`, and `cmd/producer` (network gRPC clients)
 - [x] Update `deploy/` (Dockerfile, docker-compose, prometheus.yml) for the three-service split
+- [x] Add `cmd/worker-single`, a one-consumer-per-process worker (sharing its claim/process/fail loop with `cmd/worker` via `internal/worker`), so consumer count can be adjusted by starting/stopping processes instead of restarting `cmd/worker` with a different `-workers` value
 - [ ] Long-poll or server-streaming `Claim` instead of unary polling, to cut idle-worker RPC chatter
 - [ ] TLS + auth on the gRPC connection instead of insecure credentials
 - [ ] A `Makefile`/`buf` setup for regenerating `gen/jobqueue/v1/` instead of the hand-run `protoc` invocation in the README

@@ -20,6 +20,15 @@ services:
     depends_on:
       - server
 
+  worker-single:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    entrypoint: ["/worker-single"]
+    command: ["-server-addr=server:50051"]
+    depends_on:
+      - server
+
   producer:
     build:
       context: ..

@@ -10,9 +10,11 @@ network clients, with Prometheus/Grafana observability.
 - `gen/jobqueue/v1/` — generated protobuf/gRPC Go code (checked in; regenerate with `make proto` — see below).
 - `rpc/` — the gRPC service: adapts `queue.JobQueue` to `JobQueueService`, and owns the Prometheus counters/histogram for events it observes (enqueue/complete/fail/dead-letter).
 - `cmd/server/` — runs `JobQueue` + the sweeper + the gRPC API + a `/metrics` endpoint.
-- `cmd/worker/` — a demo consumer: dials the server over gRPC, claims/processes/completes (or randomly fails) jobs.
+- `internal/worker/` — the claim/process/complete-or-fail loop shared by both worker binaries below.
+- `cmd/worker/` — a demo consumer running a fixed pool of `-workers` goroutines in one process.
+- `cmd/worker-single/` — the same consumer loop, but exactly one per process; scale consumer count by starting/stopping instances instead of tuning a pool size (see "Scaling workers" below).
 - `cmd/producer/` — a demo producer: dials the server over gRPC and periodically enqueues synthetic jobs.
-- `deploy/` — `Dockerfile` (builds all three binaries into one image), `docker-compose.yml`, and Prometheus/Grafana config.
+- `deploy/` — `Dockerfile` (builds all four binaries into one image), `docker-compose.yml`, and Prometheus/Grafana config.
 
 ## Running it
 
@@ -40,6 +42,32 @@ enabled) — the "Job Queue" dashboard shows queue depth, throughput,
 failure rate, and processing duration out of the box. Raw Prometheus is at
 `http://localhost:9090`. The server's gRPC API is also published on the
 host at `localhost:50051` if you want to point another client at it.
+
+## Scaling workers
+
+`cmd/worker` sizes its in-process goroutine pool with `-workers`, so
+changing consumer count means restarting it with a new value. `cmd/worker-single`
+runs exactly one consumer and has no pool at all — instead, you add or
+remove consumers by starting or stopping processes:
+
+```sh
+go run ./cmd/worker-single -server-addr localhost:50051 &
+go run ./cmd/worker-single -server-addr localhost:50051 &   # +1 consumer, on the fly
+kill %1                                                     # -1 consumer, on the fly
+```
+
+In docker-compose, the equivalent is scaling the `worker-single` service
+directly, without touching anything else in the stack:
+
+```sh
+docker compose up -d --scale worker-single=5   # scale up to 5 consumers
+docker compose up -d --scale worker-single=1   # scale back down to 1
+```
+
+Either way, jobs a stopped worker had already claimed aren't lost: the
+server's sweeper reclaims their leases once they expire and puts them back
+in `Pending` for a remaining worker to pick up (see "Lease-based
+reclamation" below).
 
 ## Regenerating the protobuf/gRPC code
 
@@ -128,10 +156,11 @@ wants to observe it.
 go test ./... -race
 ```
 
-`cmd/server`, `cmd/worker`, `cmd/producer`, and `rpc` are intentionally
-uncovered by unit tests; the `queue` package is the tested surface. The
-network wiring itself is exercised manually (`docker compose up`, or
-running `cmd/server`/`cmd/worker`/`cmd/producer` locally).
+`cmd/server`, `cmd/worker`, `cmd/worker-single`, `cmd/producer`,
+`internal/worker`, and `rpc` are intentionally uncovered by unit tests;
+the `queue` package is the tested surface. The network wiring itself is
+exercised manually (`docker compose up`, or running the binaries
+locally).
 
 ## Known limitations
 
