@@ -22,6 +22,8 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// JobStatus mirrors queue.Status: a job moves from PENDING to RUNNING, then
+// to either COMPLETE or, once max_attempts is exhausted, DEAD.
 type JobStatus int32
 
 const (
@@ -77,20 +79,25 @@ func (JobStatus) EnumDescriptor() ([]byte, []int) {
 	return file_jobqueue_v1_jobqueue_proto_rawDescGZIP(), []int{0}
 }
 
+// Job is the wire representation of queue.Job, as returned by Claim.
 type Job struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Id              string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	Attempts        uint32                 `protobuf:"varint,4,opt,name=attempts,proto3" json:"attempts,omitempty"`
-	MaxAttempts     uint32                 `protobuf:"varint,5,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"`
-	Status          JobStatus              `protobuf:"varint,6,opt,name=status,proto3,enum=jobqueue.v1.JobStatus" json:"status,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	CreatedAt   *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt   *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	Attempts    uint32                 `protobuf:"varint,4,opt,name=attempts,proto3" json:"attempts,omitempty"`
+	MaxAttempts uint32                 `protobuf:"varint,5,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"`
+	Status      JobStatus              `protobuf:"varint,6,opt,name=status,proto3,enum=jobqueue.v1.JobStatus" json:"status,omitempty"`
+	// lease_expiration is only meaningful while status is JOB_STATUS_RUNNING.
 	LeaseExpiration *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=lease_expiration,json=leaseExpiration,proto3" json:"lease_expiration,omitempty"`
 	Payload         []byte                 `protobuf:"bytes,8,opt,name=payload,proto3" json:"payload,omitempty"`
-	LastError       string                 `protobuf:"bytes,9,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
-	LastWorkerId    string                 `protobuf:"bytes,10,opt,name=last_worker_id,json=lastWorkerId,proto3" json:"last_worker_id,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// last_error is the message from the most recent failed attempt, if any.
+	LastError string `protobuf:"bytes,9,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	// last_worker_id is the worker that currently holds (or most recently
+	// held) this job's lease.
+	LastWorkerId  string `protobuf:"bytes,10,opt,name=last_worker_id,json=lastWorkerId,proto3" json:"last_worker_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Job) Reset() {
@@ -194,9 +201,11 @@ func (x *Job) GetLastWorkerId() string {
 }
 
 type EnqueueRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Payload       []byte                 `protobuf:"bytes,1,opt,name=payload,proto3" json:"payload,omitempty"`
-	MaxAttempts   uint32                 `protobuf:"varint,2,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Payload []byte                 `protobuf:"bytes,1,opt,name=payload,proto3" json:"payload,omitempty"`
+	// max_attempts is how many times this job may be claimed and fail before
+	// it's moved to the dead-letter set.
+	MaxAttempts   uint32 `protobuf:"varint,2,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -246,9 +255,11 @@ func (x *EnqueueRequest) GetMaxAttempts() uint32 {
 }
 
 type EnqueueResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	Accepted      bool                   `protobuf:"varint,2,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	JobId string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	// accepted is false if the queue was already at capacity; job_id is still
+	// set, but the job was not enqueued.
+	Accepted      bool `protobuf:"varint,2,opt,name=accepted,proto3" json:"accepted,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -298,8 +309,10 @@ func (x *EnqueueResponse) GetAccepted() bool {
 }
 
 type ClaimRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// worker_id identifies the caller and becomes the returned job's lease
+	// owner; it must be reused in the matching Complete/Fail call.
+	WorkerId      string `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -395,9 +408,11 @@ func (x *ClaimResponse) GetJob() *Job {
 }
 
 type CompleteRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	WorkerId      string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	JobId string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	// worker_id must match the job's current lease owner, or the call is
+	// rejected (see queue.ErrWorkerIDMismatch).
+	WorkerId      string `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -483,10 +498,14 @@ func (*CompleteResponse) Descriptor() ([]byte, []int) {
 }
 
 type FailRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	WorkerId      string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	JobId string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	// worker_id must match the job's current lease owner, or the call is
+	// rejected (see queue.ErrWorkerIDMismatch).
+	WorkerId string `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	// error is stored on the job as last_error for observability; it does not
+	// affect retry/dead-letter behavior beyond counting as one failed attempt.
+	Error         string `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

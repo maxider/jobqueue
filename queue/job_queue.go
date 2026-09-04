@@ -27,6 +27,10 @@ type JobQueue struct {
 	mu        sync.Mutex
 }
 
+// NewJobQueue constructs an empty JobQueue. maxJobs caps the number of jobs
+// counted across Pending+Running at once (0 means unlimited); leaseTime is
+// how long a worker has to Complete or Fail a claimed job before Sweep
+// reclaims it.
 func NewJobQueue(maxJobs uint16, leaseTime time.Duration) *JobQueue {
 	jq := &JobQueue{
 		MaxJobs:   maxJobs,
@@ -60,6 +64,9 @@ func (jh *JobHeap) Pop() any {
 	return job
 }
 
+// Enqueue adds j to the queue as Pending, stamping its status and
+// UpdatedAt. It returns false without modifying j if the queue is already
+// at MaxJobs capacity.
 func (jq *JobQueue) Enqueue(j *Job) bool {
 	jq.mu.Lock()
 	defer jq.mu.Unlock()
@@ -107,7 +114,10 @@ func (jq *JobQueue) IsDead(id uuid.UUID) bool {
 	return dead
 }
 
-func (jq *JobQueue) Claim(workerId uuid.UUID) *Job {
+// Claim pops the oldest Pending job (by UpdatedAt), moves it to Running
+// under a new lease owned by workerID, and returns it. It returns nil if
+// nothing is Pending.
+func (jq *JobQueue) Claim(workerID uuid.UUID) *Job {
 	jq.mu.Lock()
 	defer jq.mu.Unlock()
 
@@ -119,34 +129,46 @@ func (jq *JobQueue) Claim(workerId uuid.UUID) *Job {
 	j.LeaseExpiration = time.Now().Add(jq.LeaseTime)
 	j.JobStatus = StatusRunning
 	j.UpdatedAt = time.Now()
-	j.LastWorkerId = workerId
+	j.LastWorkerID = workerID
 	jq.Running[j.ID] = j
 	return j
 }
 
 var (
-	ErrJobNotRunning     = errors.New("job not running")
-	ErrWorkerIdMissmatch = errors.New("job is running for another worker")
-	ErrLeaseExpired      = errors.New("lease has expired")
-	ErrEnqueueFailed     = errors.New("failed to put task back in queue")
+	// ErrJobNotRunning is returned by Complete/Fail when id isn't currently
+	// in Running (already completed/dead-lettered, or never claimed).
+	ErrJobNotRunning = errors.New("job not running")
+	// ErrWorkerIDMismatch is returned by Complete/Fail when the caller's
+	// worker ID doesn't own the job's current lease — e.g. its lease
+	// already expired and a different worker claimed it. See the
+	// "At-least-once delivery" section in the README.
+	ErrWorkerIDMismatch = errors.New("job is running for another worker")
+	// ErrLeaseExpired is the internal failure reason Sweep passes to Fail
+	// when it reclaims a job whose lease expired.
+	ErrLeaseExpired = errors.New("lease has expired")
+	// ErrEnqueueFailed marks a job dead when Fail can't re-enqueue it for
+	// retry; see the comment at its call site for why this shouldn't happen.
+	ErrEnqueueFailed = errors.New("failed to put task back in queue")
 )
 
 func jobCheck(j *Job, wid uuid.UUID) error {
 	if j == nil {
 		return ErrJobNotRunning
 	}
-	if j.LastWorkerId != wid {
-		return ErrWorkerIdMissmatch
+	if j.LastWorkerID != wid {
+		return ErrWorkerIDMismatch
 	}
 	return nil
 }
 
-func (jq *JobQueue) Complete(id uuid.UUID, workerId uuid.UUID) error {
+// Complete marks id as done, provided workerID matches the worker that
+// currently holds its lease (see ErrWorkerIDMismatch).
+func (jq *JobQueue) Complete(id uuid.UUID, workerID uuid.UUID) error {
 	jq.mu.Lock()
 	defer jq.mu.Unlock()
 
 	j := jq.Running[id]
-	if err := jobCheck(j, workerId); err != nil {
+	if err := jobCheck(j, workerID); err != nil {
 		return err
 	}
 	defer delete(jq.Running, id)
@@ -155,6 +177,9 @@ func (jq *JobQueue) Complete(id uuid.UUID, workerId uuid.UUID) error {
 	return nil
 }
 
+// Fail records a failed attempt at id by worker wid: it re-enqueues the job
+// for another attempt if it hasn't exceeded MaxAttempts yet, or moves it to
+// DeadJobs otherwise. jobError is stored on the job as LastError.
 func (jq *JobQueue) Fail(id uuid.UUID, wid uuid.UUID, jobError error) error {
 	jq.mu.Lock()
 	defer jq.mu.Unlock()
@@ -193,15 +218,19 @@ func markDead(jq *JobQueue, j *Job, err error) {
 	}
 }
 
+// Sweep reclaims every Running job whose lease has expired, treating each
+// as a failed attempt (see Fail) so it either goes back to Pending for
+// another worker or is dead-lettered if out of attempts. Intended to be
+// called periodically by the caller (e.g. cmd/server runs it on a ticker).
 func (jq *JobQueue) Sweep() {
 	jq.mu.Lock()
 	defer jq.mu.Unlock()
 	for _, j := range jq.Running {
 		if time.Now().After(j.LeaseExpiration) {
-			slog.Debug("sweeper reclaimed expired lease", "job_id", j.ID, "worker_id", j.LastWorkerId)
-			// j came straight out of jq.Running keyed by its own LastWorkerId,
+			slog.Debug("sweeper reclaimed expired lease", "job_id", j.ID, "worker_id", j.LastWorkerID)
+			// j came straight out of jq.Running keyed by its own LastWorkerID,
 			// so jobCheck inside failLocked can never reject it.
-			_ = jq.failLocked(j.ID, j.LastWorkerId, ErrLeaseExpired)
+			_ = jq.failLocked(j.ID, j.LastWorkerID, ErrLeaseExpired)
 		}
 	}
 }

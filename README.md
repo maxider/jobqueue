@@ -1,5 +1,10 @@
 # job-queue
 
+[![CI](https://github.com/maxider/jobqueue/actions/workflows/ci.yml/badge.svg)](https://github.com/maxider/jobqueue/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/maxider/job-queue/queue.svg)](https://pkg.go.dev/github.com/maxider/job-queue/queue)
+[![Go version](https://img.shields.io/badge/go-1.27-00ADD8?logo=go)](go.mod)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A concurrent, lease-based job queue in Go, split into a gRPC server and
 network clients, with Prometheus/Grafana observability.
 
@@ -15,6 +20,17 @@ network clients, with Prometheus/Grafana observability.
 - `cmd/worker-single/` — the same consumer loop, but exactly one per process; scale consumer count by starting/stopping instances instead of tuning a pool size (see "Scaling workers" below).
 - `cmd/producer/` — a demo producer: dials the server over gRPC and periodically enqueues synthetic jobs.
 - `deploy/` — `Dockerfile` (builds all four binaries into one image), `docker-compose.yml`, and Prometheus/Grafana config.
+
+```mermaid
+flowchart LR
+    producer["cmd/producer"] -- gRPC Enqueue --> server
+    subgraph server["cmd/server"]
+        rpc["rpc.Server"] --> jq["queue.JobQueue\n+ sweeper"]
+    end
+    server -- gRPC Claim/Complete/Fail --> worker["cmd/worker /\ncmd/worker-single"]
+    server -- "/metrics" --> prometheus["Prometheus"]
+    prometheus --> grafana["Grafana dashboard"]
+```
 
 ## Running it
 
@@ -72,6 +88,12 @@ reclamation" below).
 ## Regenerating the protobuf/gRPC code
 
 Requires `protoc`, `protoc-gen-go`, and `protoc-gen-go-grpc` on `PATH`:
+
+```sh
+make proto
+```
+
+which just wraps:
 
 ```sh
 protoc -I api -I "$(go env GOPATH)"/../protoc/include \

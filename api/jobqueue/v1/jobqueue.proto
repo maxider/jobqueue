@@ -6,6 +6,8 @@ option go_package = "github.com/maxider/job-queue/gen/jobqueue/v1;jobqueuev1";
 
 import "google/protobuf/timestamp.proto";
 
+// JobStatus mirrors queue.Status: a job moves from PENDING to RUNNING, then
+// to either COMPLETE or, once max_attempts is exhausted, DEAD.
 enum JobStatus {
   JOB_STATUS_UNSPECIFIED = 0;
   JOB_STATUS_PENDING = 1;
@@ -14,6 +16,7 @@ enum JobStatus {
   JOB_STATUS_DEAD = 4;
 }
 
+// Job is the wire representation of queue.Job, as returned by Claim.
 message Job {
   string id = 1;
   google.protobuf.Timestamp created_at = 2;
@@ -21,23 +24,33 @@ message Job {
   uint32 attempts = 4;
   uint32 max_attempts = 5;
   JobStatus status = 6;
+  // lease_expiration is only meaningful while status is JOB_STATUS_RUNNING.
   google.protobuf.Timestamp lease_expiration = 7;
   bytes payload = 8;
+  // last_error is the message from the most recent failed attempt, if any.
   string last_error = 9;
+  // last_worker_id is the worker that currently holds (or most recently
+  // held) this job's lease.
   string last_worker_id = 10;
 }
 
 message EnqueueRequest {
   bytes payload = 1;
+  // max_attempts is how many times this job may be claimed and fail before
+  // it's moved to the dead-letter set.
   uint32 max_attempts = 2;
 }
 
 message EnqueueResponse {
   string job_id = 1;
+  // accepted is false if the queue was already at capacity; job_id is still
+  // set, but the job was not enqueued.
   bool accepted = 2;
 }
 
 message ClaimRequest {
+  // worker_id identifies the caller and becomes the returned job's lease
+  // owner; it must be reused in the matching Complete/Fail call.
   string worker_id = 1;
 }
 
@@ -49,6 +62,8 @@ message ClaimResponse {
 
 message CompleteRequest {
   string job_id = 1;
+  // worker_id must match the job's current lease owner, or the call is
+  // rejected (see queue.ErrWorkerIDMismatch).
   string worker_id = 2;
 }
 
@@ -56,7 +71,11 @@ message CompleteResponse {}
 
 message FailRequest {
   string job_id = 1;
+  // worker_id must match the job's current lease owner, or the call is
+  // rejected (see queue.ErrWorkerIDMismatch).
   string worker_id = 2;
+  // error is stored on the job as last_error for observability; it does not
+  // affect retry/dead-letter behavior beyond counting as one failed attempt.
   string error = 3;
 }
 

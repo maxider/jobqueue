@@ -7,6 +7,7 @@ services:
       dockerfile: deploy/Dockerfile
     entrypoint: ["/server"]
     command: ["-grpc-addr=:50051", "-metrics-addr=:2112"]
+    restart: unless-stopped
     ports:
       - "2112:2112"
       - "50051:50051"
@@ -17,6 +18,7 @@ services:
       dockerfile: deploy/Dockerfile
     entrypoint: ["/worker"]
     command: ["-server-addr=server:50051"]
+    restart: unless-stopped
     depends_on:
       - server
 
@@ -26,6 +28,7 @@ services:
       dockerfile: deploy/Dockerfile
     entrypoint: ["/worker-single"]
     command: ["-server-addr=server:50051"]
+    restart: unless-stopped
     depends_on:
       - server
 
@@ -35,20 +38,27 @@ services:
       dockerfile: deploy/Dockerfile
     entrypoint: ["/producer"]
     command: ["-server-addr=server:50051"]
+    restart: unless-stopped
     depends_on:
       - server
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.14.0
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     depends_on:
       - server
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.0.8
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
@@ -56,5 +66,12 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
       - "3000:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy

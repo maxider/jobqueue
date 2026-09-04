@@ -21,8 +21,8 @@ func TestScenarioClaimCompleteHappyPath(t *testing.T) {
 	if claimed.JobStatus != StatusRunning {
 		t.Errorf("JobStatus = %v, want %v", claimed.JobStatus, StatusRunning)
 	}
-	if claimed.LastWorkerId != worker {
-		t.Errorf("LastWorkerId = %v, want %v", claimed.LastWorkerId, worker)
+	if claimed.LastWorkerID != worker {
+		t.Errorf("LastWorkerID = %v, want %v", claimed.LastWorkerID, worker)
 	}
 
 	if err := jq.Complete(claimed.ID, worker); err != nil {
@@ -79,8 +79,8 @@ func TestScenarioWorkerCrashJobReclaimedBySweep(t *testing.T) {
 	if reclaimed == nil || reclaimed.ID != claimed.ID {
 		t.Fatalf("Claim() = %v, want the reclaimed job %v", reclaimed, claimed)
 	}
-	if reclaimed.LastWorkerId != workerB {
-		t.Errorf("LastWorkerId = %v, want %v after reclaiming", reclaimed.LastWorkerId, workerB)
+	if reclaimed.LastWorkerID != workerB {
+		t.Errorf("LastWorkerID = %v, want %v after reclaiming", reclaimed.LastWorkerID, workerB)
 	}
 }
 
@@ -146,8 +146,8 @@ func TestScenarioFencingPreventsStaleComplete(t *testing.T) {
 	jq.enqueueLocked(j)
 	claimed := jq.Claim(workerA)
 
-	if err := jq.Complete(claimed.ID, workerB); err != ErrWorkerIdMissmatch {
-		t.Fatalf("Complete() by non-owning worker error = %v, want %v", err, ErrWorkerIdMissmatch)
+	if err := jq.Complete(claimed.ID, workerB); err != ErrWorkerIDMismatch {
+		t.Fatalf("Complete() by non-owning worker error = %v, want %v", err, ErrWorkerIDMismatch)
 	}
 
 	if claimed.JobStatus != StatusRunning {
@@ -156,7 +156,7 @@ func TestScenarioFencingPreventsStaleComplete(t *testing.T) {
 	if _, ok := jq.Running[claimed.ID]; !ok {
 		t.Error("job was removed from Running despite the stale Complete being rejected")
 	}
-	if claimed.LastWorkerId != workerA {
-		t.Errorf("LastWorkerId = %v, want %v: ownership must not change on a rejected Complete", claimed.LastWorkerId, workerA)
+	if claimed.LastWorkerID != workerA {
+		t.Errorf("LastWorkerID = %v, want %v: ownership must not change on a rejected Complete", claimed.LastWorkerID, workerA)
 	}
 }

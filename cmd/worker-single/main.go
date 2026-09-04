@@ -45,10 +45,10 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	workerId := uuid.New()
-	slog.Info("running", "server_addr", *serverAddr, "worker_id", workerId, "msg", "press Ctrl+C to stop")
+	workerID := uuid.New()
+	slog.Info("running", "server_addr", *serverAddr, "worker_id", workerID, "msg", "press Ctrl+C to stop")
 
-	worker.Run(ctx, client, workerId, *leaseTime)
+	worker.Run(ctx, client, workerID, *leaseTime)
 
 	slog.Info("clean shutdown complete")
 }

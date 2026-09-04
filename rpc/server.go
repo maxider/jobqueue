@@ -46,12 +46,12 @@ func (s *Server) Enqueue(_ context.Context, req *jobqueuev1.EnqueueRequest) (*jo
 }
 
 func (s *Server) Claim(_ context.Context, req *jobqueuev1.ClaimRequest) (*jobqueuev1.ClaimResponse, error) {
-	workerId, err := uuid.Parse(req.GetWorkerId())
+	workerID, err := uuid.Parse(req.GetWorkerId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid worker_id: %v", err)
 	}
 
-	j := s.jq.Claim(workerId)
+	j := s.jq.Claim(workerID)
 	if j == nil {
 		return &jobqueuev1.ClaimResponse{Found: false}, nil
 	}
@@ -61,15 +61,15 @@ func (s *Server) Claim(_ context.Context, req *jobqueuev1.ClaimRequest) (*jobque
 }
 
 func (s *Server) Complete(_ context.Context, req *jobqueuev1.CompleteRequest) (*jobqueuev1.CompleteResponse, error) {
-	jobId, workerId, err := parseIds(req.GetJobId(), req.GetWorkerId())
+	jobID, workerID, err := parseIDs(req.GetJobId(), req.GetWorkerId())
 	if err != nil {
 		return nil, err
 	}
 
-	if err := s.jq.Complete(jobId, workerId); err != nil {
+	if err := s.jq.Complete(jobID, workerID); err != nil {
 		return nil, toStatusError(err)
 	}
-	if elapsed, ok := s.claims.stop(jobId); ok {
+	if elapsed, ok := s.claims.stop(jobID); ok {
 		jobProcessingDuration.Observe(elapsed.Seconds())
 	}
 	jobsCompletedTotal.Inc()
@@ -77,41 +77,41 @@ func (s *Server) Complete(_ context.Context, req *jobqueuev1.CompleteRequest) (*
 }
 
 func (s *Server) Fail(_ context.Context, req *jobqueuev1.FailRequest) (*jobqueuev1.FailResponse, error) {
-	jobId, workerId, err := parseIds(req.GetJobId(), req.GetWorkerId())
+	jobID, workerID, err := parseIDs(req.GetJobId(), req.GetWorkerId())
 	if err != nil {
 		return nil, err
 	}
 
-	if err := s.jq.Fail(jobId, workerId, errors.New(req.GetError())); err != nil {
+	if err := s.jq.Fail(jobID, workerID, errors.New(req.GetError())); err != nil {
 		return nil, toStatusError(err)
 	}
-	if elapsed, ok := s.claims.stop(jobId); ok {
+	if elapsed, ok := s.claims.stop(jobID); ok {
 		jobProcessingDuration.Observe(elapsed.Seconds())
 	}
 	jobsFailedTotal.Inc()
-	if s.jq.IsDead(jobId) {
+	if s.jq.IsDead(jobID) {
 		jobsDeadLetteredTotal.Inc()
 	}
 	return &jobqueuev1.FailResponse{}, nil
 }
 
-func parseIds(rawJobId, rawWorkerId string) (jobId, workerId uuid.UUID, err error) {
-	jobId, err = uuid.Parse(rawJobId)
+func parseIDs(rawJobID, rawWorkerID string) (jobID, workerID uuid.UUID, err error) {
+	jobID, err = uuid.Parse(rawJobID)
 	if err != nil {
 		return uuid.UUID{}, uuid.UUID{}, status.Errorf(codes.InvalidArgument, "invalid job_id: %v", err)
 	}
-	workerId, err = uuid.Parse(rawWorkerId)
+	workerID, err = uuid.Parse(rawWorkerID)
 	if err != nil {
 		return uuid.UUID{}, uuid.UUID{}, status.Errorf(codes.InvalidArgument, "invalid worker_id: %v", err)
 	}
-	return jobId, workerId, nil
+	return jobID, workerID, nil
 }
 
 func toStatusError(err error) error {
 	switch {
 	case errors.Is(err, queue.ErrJobNotRunning):
 		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, queue.ErrWorkerIdMissmatch):
+	case errors.Is(err, queue.ErrWorkerIDMismatch):
 		return status.Error(codes.PermissionDenied, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
@@ -129,7 +129,7 @@ func toProto(j *queue.Job) *jobqueuev1.Job {
 		LeaseExpiration: timestamppb.New(j.LeaseExpiration),
 		Payload:         j.Payload,
 		LastError:       j.LastError,
-		LastWorkerId:    j.LastWorkerId.String(),
+		LastWorkerId:    j.LastWorkerID.String(),
 	}
 }
 

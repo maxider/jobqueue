@@ -196,8 +196,8 @@ func TestJobQueueClaim(t *testing.T) {
 	if claimed.LeaseExpiration.Before(before.Add(time.Minute)) {
 		t.Errorf("LeaseExpiration = %v, want at least %v after claim", claimed.LeaseExpiration, before.Add(time.Minute))
 	}
-	if claimed.LastWorkerId != worker {
-		t.Errorf("LastWorkerId = %v, want %v", claimed.LastWorkerId, worker)
+	if claimed.LastWorkerID != worker {
+		t.Errorf("LastWorkerID = %v, want %v", claimed.LastWorkerID, worker)
 	}
 	if jq.Running[claimed.ID] != claimed {
 		t.Error("claimed job was not recorded in Running")
@@ -216,11 +216,11 @@ func TestJobQueueClaimRecordsDifferentWorkerPerJob(t *testing.T) {
 	j1 := jq.Claim(w1)
 	j2 := jq.Claim(w2)
 
-	if j1.LastWorkerId != w1 {
-		t.Errorf("j1.LastWorkerId = %v, want %v", j1.LastWorkerId, w1)
+	if j1.LastWorkerID != w1 {
+		t.Errorf("j1.LastWorkerID = %v, want %v", j1.LastWorkerID, w1)
 	}
-	if j2.LastWorkerId != w2 {
-		t.Errorf("j2.LastWorkerId = %v, want %v", j2.LastWorkerId, w2)
+	if j2.LastWorkerID != w2 {
+		t.Errorf("j2.LastWorkerID = %v, want %v", j2.LastWorkerID, w2)
 	}
 }
 
@@ -254,8 +254,8 @@ func TestJobQueueCompleteWrongWorker(t *testing.T) {
 	owner, other := uuid.New(), uuid.New()
 	jq.enqueueLocked(jobAt(time.Now()))
 	claimed := jq.Claim(owner)
-	if err := jq.Complete(claimed.ID, other); err != ErrWorkerIdMissmatch {
-		t.Fatalf("Complete() error = %v, want %v", err, ErrWorkerIdMissmatch)
+	if err := jq.Complete(claimed.ID, other); err != ErrWorkerIDMismatch {
+		t.Fatalf("Complete() error = %v, want %v", err, ErrWorkerIDMismatch)
 	}
 	if claimed.JobStatus != StatusRunning {
 		t.Errorf("JobStatus = %v, want %v: job must not be completed by a non-owning worker", claimed.JobStatus, StatusRunning)
@@ -353,8 +353,8 @@ func TestJobQueueFailWrongWorker(t *testing.T) {
 	jq.enqueueLocked(j)
 	claimed := jq.Claim(owner)
 
-	if err := jq.Fail(claimed.ID, other, errBoom); err != ErrWorkerIdMissmatch {
-		t.Fatalf("Fail() error = %v, want %v", err, ErrWorkerIdMissmatch)
+	if err := jq.Fail(claimed.ID, other, errBoom); err != ErrWorkerIDMismatch {
+		t.Fatalf("Fail() error = %v, want %v", err, ErrWorkerIDMismatch)
 	}
 	if claimed.Attempts != 0 {
 		t.Errorf("Attempts = %d, want 0: a non-owning worker must not be able to record a failed attempt", claimed.Attempts)
@@ -404,12 +404,12 @@ func TestJobQueueRetriedJobCanBeClaimedByDifferentWorker(t *testing.T) {
 	if reclaimed != claimed {
 		t.Fatalf("Claim() returned %v, want the retried job %v", reclaimed, claimed)
 	}
-	if reclaimed.LastWorkerId != w2 {
-		t.Errorf("LastWorkerId = %v, want %v after reclaiming", reclaimed.LastWorkerId, w2)
+	if reclaimed.LastWorkerID != w2 {
+		t.Errorf("LastWorkerID = %v, want %v after reclaiming", reclaimed.LastWorkerID, w2)
 	}
 	// w1 no longer owns the job, so it must not be able to complete it.
-	if err := jq.Complete(reclaimed.ID, w1); err != ErrWorkerIdMissmatch {
-		t.Errorf("Complete() by original worker error = %v, want %v", err, ErrWorkerIdMissmatch)
+	if err := jq.Complete(reclaimed.ID, w1); err != ErrWorkerIDMismatch {
+		t.Errorf("Complete() by original worker error = %v, want %v", err, ErrWorkerIDMismatch)
 	}
 	if err := jq.Complete(reclaimed.ID, w2); err != nil {
 		t.Errorf("Complete() by new owning worker error = %v, want nil", err)

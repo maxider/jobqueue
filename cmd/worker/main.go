@@ -48,8 +48,8 @@ func main() {
 	var wg sync.WaitGroup
 	for range *numWorkers {
 		wg.Go(func() {
-			workerId := uuid.New()
-			worker.Run(ctx, client, workerId, *leaseTime)
+			workerID := uuid.New()
+			worker.Run(ctx, client, workerID, *leaseTime)
 		})
 	}
 
