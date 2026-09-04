@@ -12,15 +12,15 @@ services:
       - "2112:2112"
       - "50051:50051"
 
-  worker:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    entrypoint: ["/worker"]
-    command: ["-server-addr=server:50051"]
-    restart: unless-stopped
-    depends_on:
-      - server
+  # worker:
+  #   build:
+  #     context: ..
+  #     dockerfile: deploy/Dockerfile
+  #   entrypoint: ["/worker"]
+  #   command: ["-server-addr=server:50051"]
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - server
 
   worker-single:
     build:
