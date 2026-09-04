@@ -46,7 +46,7 @@ producer periodically enqueues synthetic jobs; the worker claims,
 reports back `Complete` or `Fail` — all over the network, not in-process.
 Metrics are exposed at `http://localhost:2112/metrics`.
 
-For the full stack (server + worker + producer + Prometheus + a
+For the full stack (server + worker-single + producer + Prometheus + a
 pre-provisioned Grafana dashboard):
 
 ```sh
@@ -58,6 +58,8 @@ enabled) — the "Job Queue" dashboard shows queue depth, throughput,
 failure rate, and processing duration out of the box. Raw Prometheus is at
 `http://localhost:9090`. The server's gRPC API is also published on the
 host at `localhost:50051` if you want to point another client at it.
+
+![Grafana "Job Queue" dashboard](dashboard.png)
 
 ## Scaling workers
 
