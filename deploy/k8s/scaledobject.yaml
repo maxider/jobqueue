@@ -1,0 +1,29 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-single
+  namespace: job-queue
+spec:
+  scaleTargetRef:
+    name: worker-single
+  minReplicaCount: 1
+  maxReplicaCount: 6
+  # pollingInterval/cooldownPeriod only apply when minReplicaCount is 0
+  # (KEDA's own activation/deactivation loop); with minReplicaCount: 1,
+  # KEDA just manages a regular HPA, which already scales up fast by
+  # default. The one knob worth tightening for a demo is the HPA's
+  # scale-down stabilization window, which otherwise defaults to 5
+  # minutes — a real deployment would likely leave this closer to
+  # default to avoid reacting to short-lived dips in queue depth.
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 15
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.job-queue.svc.cluster.local:9090
+        query: queue_pending_jobs
+        # ~1 worker per 5 pending jobs, bounded by min/maxReplicaCount above.
+        threshold: "5"

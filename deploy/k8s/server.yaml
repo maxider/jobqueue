@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: job-queue
+spec:
+  # queue.JobQueue is an in-memory singleton behind one mutex: two replicas
+  # would each hold their own independent queue. Pinned to 1, and never
+  # targeted by the KEDA ScaledObject (only worker-single is).
+  replicas: 1
+  # Recreate (not the default RollingUpdate) so an update can't transiently
+  # run two replicas at once, which would briefly violate that invariant.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      containers:
+        - name: server
+          image: jobqueue:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - -grpc-addr=:50051
+            - -metrics-addr=:2112
+          ports:
+            - name: grpc
+              containerPort: 50051
+            - name: metrics
+              containerPort: 2112
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: job-queue
+spec:
+  selector:
+    app: server
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+    - name: metrics
+      port: 2112
+      targetPort: metrics

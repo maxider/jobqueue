@@ -10,16 +10,18 @@ network clients, with Prometheus/Grafana observability.
 
 ## Layout
 
-- `queue/` — the library: `JobQueue`, lease-based claiming, retries, dead-lettering. No Prometheus/gRPC dependency.
+- `go/` — the Go implementation (module root). `rust/` — the Rust implementation (library crate, not yet implemented); both share `api/` and `deploy/`.
+- `go/queue/` — the library: `JobQueue`, lease-based claiming, retries, dead-lettering. No Prometheus/gRPC dependency.
 - `api/jobqueue/v1/` — the protobuf contract (`jobqueue.proto`) for `JobQueueService`.
-- `gen/jobqueue/v1/` — generated protobuf/gRPC Go code (checked in; regenerate with `make proto` — see below).
-- `rpc/` — the gRPC service: adapts `queue.JobQueue` to `JobQueueService`, and owns the Prometheus counters/histogram for events it observes (enqueue/complete/fail/dead-letter).
-- `cmd/server/` — runs `JobQueue` + the sweeper + the gRPC API + a `/metrics` endpoint.
+- `go/gen/jobqueue/v1/` — generated protobuf/gRPC Go code (checked in; regenerate with `make proto` — see below).
+- `go/rpc/` — the gRPC service: adapts `queue.JobQueue` to `JobQueueService`, and owns the Prometheus counters/histogram for events it observes (enqueue/complete/fail/dead-letter).
+- `go/cmd/server/` — runs `JobQueue` + the sweeper + the gRPC API + a `/metrics` endpoint.
 - `internal/worker/` — the claim/process/complete-or-fail loop shared by both worker binaries below.
-- `cmd/worker/` — a demo consumer running a fixed pool of `-workers` goroutines in one process.
-- `cmd/worker-single/` — the same consumer loop, but exactly one per process; scale consumer count by starting/stopping instances instead of tuning a pool size (see "Scaling workers" below).
-- `cmd/producer/` — a demo producer: dials the server over gRPC and periodically enqueues synthetic jobs.
+- `go/cmd/worker/` — a demo consumer running a fixed pool of `-workers` goroutines in one process.
+- `go/cmd/worker-single/` — the same consumer loop, but exactly one per process; scale consumer count by starting/stopping instances instead of tuning a pool size (see "Scaling workers" below).
+- `go/cmd/producer/` — a demo producer: dials the server over gRPC and periodically enqueues synthetic jobs.
 - `deploy/` — `Dockerfile` (builds all four binaries into one image), `docker-compose.yml`, and Prometheus/Grafana config.
+- `deploy/k8s/` — Kubernetes manifests that autoscale `worker-single` with KEDA based on queue depth (see "Kubernetes" below).
 
 ```mermaid
 flowchart LR
@@ -86,6 +88,105 @@ Either way, jobs a stopped worker had already claimed aren't lost: the
 server's sweeper reclaims their leases once they expire and puts them back
 in `Pending` for a remaining worker to pick up (see "Lease-based
 reclamation" below).
+
+## Kubernetes
+
+`deploy/k8s/` takes the `worker-single` scaling story further: instead of
+scaling manually (a person or a script running `docker compose up
+--scale`), a [KEDA](https://keda.sh) `ScaledObject` watches
+`queue_pending_jobs` and adjusts the `worker-single` Deployment's replica
+count automatically.
+
+What's deployed, all in a `job-queue` namespace:
+
+- **`server`** — Deployment pinned to `replicas: 1` with `strategy:
+  Recreate`, plus a Service exposing its gRPC (50051) and metrics (2112)
+  ports. `queue.JobQueue` is an in-memory singleton behind one mutex, so
+  it's never a KEDA scale target and can never transiently run two
+  replicas during an update.
+- **`producer`** — Deployment, `replicas: 1`, enqueuing synthetic jobs
+  against `server:50051`. Scaling this Deployment is how you control queue
+  *inflow* — see "Scaling producers" below.
+- **`worker-single`** — Deployment, the actual scale target.
+- **`prometheus`** — an in-cluster Prometheus (ConfigMap + Deployment +
+  Service) scraping `server:2112`, so KEDA has something to query.
+- **`grafana`** — Deployment + Service reusing the same
+  `deploy/grafana/provisioning/` dashboard/datasource as docker-compose
+  (see "Viewing it in Grafana" below) — the datasource's `prometheus:9090`
+  URL resolves the same way here, since the in-cluster Service is also
+  named `prometheus`.
+- **`scaledobject.yaml`** — the KEDA `ScaledObject`: a `prometheus`
+  trigger querying `queue_pending_jobs` with `threshold: "5"` (roughly
+  one worker per 5 pending jobs), `minReplicaCount: 1`,
+  `maxReplicaCount: 6`. KEDA turns this into a regular
+  `HorizontalPodAutoscaler` (`kubectl get hpa -n job-queue` shows it)
+  targeting `worker-single`.
+
+Reproduce it locally with [kind](https://kind.sigs.k8s.io) (no cloud
+account or registry needed) and [KEDA](https://keda.sh):
+
+```sh
+make kind-up
+```
+
+which installs KEDA (pinned via `KEDA_VERSION` in the `Makefile`), builds
+and loads the image into the cluster, applies everything in `deploy/k8s/`,
+and generates the `grafana-datasources`/`grafana-dashboards` ConfigMaps
+from `deploy/grafana/provisioning/` (so that dashboard JSON has one source
+of truth, shared with docker-compose, instead of being duplicated into a
+manifest). `make kind-down` tears the cluster down again. If you'd rather
+run the steps by hand, read the `kind-up` target in the `Makefile` — it's
+just `kind create cluster`, `kubectl apply --server-side -f
+<KEDA release>`, `docker build` + `kind load docker-image`, then `kubectl
+apply -f deploy/k8s/`.
+
+### Viewing it in Grafana
+
+```sh
+kubectl -n job-queue port-forward svc/grafana 3000:3000
+```
+
+Then open `http://localhost:3000` — anonymous viewer access is enabled,
+same as docker-compose, and the "Job Queue" dashboard is already
+provisioned. Prometheus itself is also reachable directly if you want raw
+queries: `kubectl -n job-queue port-forward svc/prometheus 9090:9090`.
+
+### Scaling producers
+
+`producer` is stateless (no worker-ID-style identity to coordinate), so
+scaling it is just:
+
+```sh
+kubectl -n job-queue scale deployment producer --replicas=3   # ~3x the enqueue rate
+kubectl -n job-queue scale deployment producer --replicas=0   # pause inflow entirely
+```
+
+Each producer replica enqueues independently at its own `-interval`
+(50ms/~20 jobs-per-sec by default), so replica count is a direct, linear
+lever on how fast the queue fills — 3 replicas enqueue at ~60/sec, 0
+replicas stops inflow so the backlog can drain. This is the easiest way
+to manufacture load and watch `worker-single` react in Grafana/`kubectl
+get hpa`, or conversely to drain the queue back down.
+
+### Watching it react to load
+
+```sh
+kubectl -n job-queue get hpa keda-hpa-worker-single -w   # replica count vs. metric value
+```
+
+At the default single-producer rate (~20 jobs/sec), a single
+`worker-single` replica (~4-5 jobs/sec) falls behind immediately, so
+you'll see `worker-single` climb toward `maxReplicaCount` quickly. Six
+replicas top out around 16-17 jobs/sec, which is still short of even one
+producer's rate — a deliberate, honest ceiling from `maxReplicaCount: 6`
+rather than a bug (raise it, or scale `producer` down/to 0, if you want
+the queue to actually drain — see "Scaling producers" above). Once
+`queue_pending_jobs` hits 0 and the (demo-tightened) 15s scale-down
+stabilization window passes, `worker-single` falls back to
+`minReplicaCount: 1`.
+
+Tear down with `make kind-down` (or `kind delete cluster --name
+job-queue`) when you're done.
 
 ## Regenerating the protobuf/gRPC code
 
@@ -202,3 +303,8 @@ locally).
 - No transport security — the gRPC server and clients use insecure
   (unencrypted, unauthenticated) connections. Fine for a local demo, not
   for anything beyond it.
+- The KEDA `ScaledObject`'s `minReplicaCount: 1` sidesteps scale-to-zero
+  (which needs an `activationThreshold` and behaves differently — KEDA's
+  own polling loop stands in for the HPA below that point) rather than
+  supporting it; `maxReplicaCount: 6` is a demo-sized ceiling, not a
+  measured capacity figure.

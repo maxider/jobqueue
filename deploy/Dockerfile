@@ -1,8 +1,8 @@
 FROM golang:1.27-alpine AS build
 WORKDIR /src
-COPY go.mod go.sum ./
+COPY go/go.mod go/go.sum ./
 RUN go mod download
-COPY . .
+COPY go/ .
 RUN CGO_ENABLED=0 go build -o /out/server ./cmd/server
 RUN CGO_ENABLED=0 go build -o /out/worker ./cmd/worker
 RUN CGO_ENABLED=0 go build -o /out/worker-single ./cmd/worker-single

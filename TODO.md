@@ -34,6 +34,16 @@
 - [ ] TLS + auth on the gRPC connection instead of insecure credentials
 - [x] A `Makefile` (`make proto`) wrapping the `protoc` invocation instead of only documenting it by hand in the README
 
+## Kubernetes
+- [x] `deploy/k8s/` manifests (namespace, `server`/`producer`/`worker-single` Deployments + Services, in-cluster Prometheus) with `server` pinned to `replicas: 1`/`strategy: Recreate` since `queue.JobQueue` is an in-memory singleton
+- [x] Install KEDA and add a `ScaledObject` autoscaling `worker-single` on `queue_pending_jobs` (verified live on a local `kind` cluster: scales up under backlog, back down to `minReplicaCount` once drained)
+- [x] Add `grafana` to `deploy/k8s/`, reusing `deploy/grafana/provisioning/` (generated into ConfigMaps by `make kind-up` rather than duplicating the dashboard JSON into a manifest) instead of only having Grafana in docker-compose
+- [x] `make kind-up`/`make kind-down` wrapping the kind+KEDA+build+load+apply steps into one command
+- [ ] Scale-to-zero (`minReplicaCount: 0` + `activationThreshold`) instead of pinning a floor of 1
+- [ ] Right-size `maxReplicaCount` (and the Prometheus trigger's `threshold`) against a real measured jobs/sec-per-worker figure instead of the demo's arbitrary 6/5
+- [ ] A Helm chart or Kustomize overlays if `deploy/k8s/` ever needs to vary per environment
+- [ ] `NetworkPolicy`/resource `LimitRange` hardening for the `job-queue` namespace
+
 ## Stretch (only if turning this into more than a portfolio demo)
 - [ ] Thread `context.Context` through `Claim`/`Complete`/`Fail` for cancellation/timeouts
 - [ ] Pluggable persistence (currently fully in-memory — noted as a known limitation in the README)
